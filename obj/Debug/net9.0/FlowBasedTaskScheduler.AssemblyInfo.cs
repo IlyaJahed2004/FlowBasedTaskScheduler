@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("FlowBasedTaskScheduler")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+70ae95e6cf3abd6c8295c837b37c6d6a595563a7")]
 [assembly: System.Reflection.AssemblyProductAttribute("FlowBasedTaskScheduler")]
 [assembly: System.Reflection.AssemblyTitleAttribute("FlowBasedTaskScheduler")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

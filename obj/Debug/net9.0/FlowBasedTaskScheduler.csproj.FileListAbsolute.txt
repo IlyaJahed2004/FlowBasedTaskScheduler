@@ -1,0 +1,15 @@
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.GeneratedMSBuildEditorConfig.editorconfig
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.AssemblyInfoInputs.cache
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.AssemblyInfo.cs
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.csproj.CoreCompileInputs.cache
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.sourcelink.json
+D:\FlowBasedTaskScheduler\bin\Debug\net9.0\FlowBasedTaskScheduler.exe
+D:\FlowBasedTaskScheduler\bin\Debug\net9.0\FlowBasedTaskScheduler.deps.json
+D:\FlowBasedTaskScheduler\bin\Debug\net9.0\FlowBasedTaskScheduler.runtimeconfig.json
+D:\FlowBasedTaskScheduler\bin\Debug\net9.0\FlowBasedTaskScheduler.dll
+D:\FlowBasedTaskScheduler\bin\Debug\net9.0\FlowBasedTaskScheduler.pdb
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.dll
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\refint\FlowBasedTaskScheduler.dll
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.pdb
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\FlowBasedTaskScheduler.genruntimeconfig.cache
+D:\FlowBasedTaskScheduler\obj\Debug\net9.0\ref\FlowBasedTaskScheduler.dll

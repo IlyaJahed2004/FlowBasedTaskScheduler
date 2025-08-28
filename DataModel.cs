@@ -1,6 +1,6 @@
 namespace DataModel;
 
-public record Task(string Id, int CpuRequired, int RamRequired);
+public record Task(string Id, int CpuRequired, int RamRequired, int deadline);
 
 public record Node(string Id, int CpuCapacity, int RamCapacity, int Slots);
 
@@ -9,7 +9,7 @@ public class Edge
     public int From { get; init; }
     public int To { get; init; }
     public int Capacity { get; init; }
-    public int Cost { get; init; }
+    public int Cost { get; init; } //in taskallocation it means that based on which node the task wanna be executed ,the cost is different.
     public int Flow { get; private set; }
     public Edge Reverse { get; set; } = null!;
 
