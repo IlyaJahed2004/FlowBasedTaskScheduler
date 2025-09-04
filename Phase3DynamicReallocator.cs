@@ -71,10 +71,9 @@ namespace DynamicReallocation
                             {
                                 schedule.Remove(tId);
                                 reassignedTasks.Add(tId);
-                                failedTasks.Add(tId); // initially fail, may reassign below
+                                failedTasks.Add(tId);
                             }
 
-                            // remove CPU/RAM availability
                             cpuPerTime.Remove(ev.Node);
                             ramPerTime.Remove(ev.Node);
                         }
@@ -84,15 +83,14 @@ namespace DynamicReallocation
                         if (ev.Task != null)
                         {
                             tasks.Add(ev.Task);
-                            taskDurations[ev.Task.Id] = 1; // default duration if not specified
+                            taskDurations[ev.Task.Id] = 1;
                             reassignedTasks.Add(ev.Task.Id);
                         }
                         break;
                 }
             }
 
-            // Apply partial rescheduling
-            foreach (var tId in reassignedTasks.ToList()) // clone list to iterate
+            foreach (var tId in reassignedTasks.ToList())
             {
                 var task = tasks.FirstOrDefault(t => t.Id == tId);
                 if (task == null)
@@ -123,7 +121,7 @@ namespace DynamicReallocation
                             schedule[tId] = (node.Id, startTime);
                             assigned = true;
                             changePenalty++;
-                            failedTasks.Remove(tId); // remove from failed list
+                            failedTasks.Remove(tId);
                             break;
                         }
                         startTime++;
@@ -139,7 +137,7 @@ namespace DynamicReallocation
                     failedTasks.Add(tId);
             }
 
-            int totalCost = totalCostPhase1 + changePenalty; // simple model
+            int totalCost = totalCostPhase1 + changePenalty;
             return new Phase3Output(
                 schedule,
                 reassignedTasks,
