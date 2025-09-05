@@ -1,5 +1,7 @@
+using System.Linq;
 using System.Text.Json;
 using DataModel;
+using MinCostMaxFlow;
 
 namespace Allocation
 {
@@ -27,23 +29,16 @@ namespace Allocation
             BuildGraph();
         }
 
-        /// <summary>
-        /// Build the flow graph:
-        /// - Source -> Task (capacity = 1, cost = 0)
-        /// - Task -> Node (capacity = 1, cost = execution cost) -- only if node individually can run the task
-        /// - Node -> Sink (capacity = node.Slots, cost = 0)
-        /// This models per-task assignment (one task to exactly one node).
-        /// </summary>
         private void BuildGraph()
         {
-            //Source -> Tasks
+            // Source -> Tasks
             for (int i = 0; i < tasks.Count; i++)
             {
                 int taskVertex = 1 + i;
                 graph.AddEdge(source, taskVertex, 1, 0); // each task can be selected exactly once
             }
 
-            //Tasks -> Nodes
+            // Tasks -> Nodes (only if node can run the task alone AND cost != INF)
             for (int i = 0; i < tasks.Count; i++)
             {
                 int taskVertex = 1 + i;
@@ -55,25 +50,60 @@ namespace Allocation
                     if (cost == int.MaxValue) // treat as ∞
                         continue;
 
+                    // QUICK CHECK: node must be able to run this task alone
+                    if (
+                        tasks[i].CpuRequired > nodes[j].CpuCapacity
+                        || tasks[i].RamRequired > nodes[j].RamCapacity
+                    )
+                        continue;
+
                     graph.AddEdge(taskVertex, nodeVertex, 1, cost);
                 }
             }
 
-            //Nodes -> Sink
+            // Nodes -> Sink: compute conservative slot bound based on minimal per-task demands
             for (int j = 0; j < nodes.Count; j++)
             {
                 int nodeVertex = 1 + tasks.Count + j;
-                // Slots limits number of concurrent tasks on this node
-                graph.AddEdge(nodeVertex, sink, nodes[j].Slots, 0);
+
+                var assignable = tasks
+                    .Select((t, idx) => (task: t, idx))
+                    .Where(x =>
+                        costMatrix[x.idx, j] != int.MaxValue
+                        && x.task.CpuRequired <= nodes[j].CpuCapacity
+                        && x.task.RamRequired <= nodes[j].RamCapacity
+                    )
+                    .ToList();
+
+                if (assignable.Count == 0)
+                    continue;
+
+                int minCpu = assignable.Min(x => x.task.CpuRequired);
+                int minRam = assignable.Min(x => x.task.RamRequired);
+
+                int cpuBound = nodes[j].CpuCapacity / Math.Max(1, minCpu);
+                int ramBound = nodes[j].RamCapacity / Math.Max(1, minRam);
+
+                int resourceBasedSlots = Math.Min(cpuBound, ramBound);
+
+                int finalSlots = Math.Min(nodes[j].Slots, Math.Max(0, resourceBasedSlots));
+
+                if (finalSlots <= 0)
+                    continue;
+
+                graph.AddEdge(nodeVertex, sink, finalSlots, 0);
             }
         }
 
         /// <summary>
         /// Solve using the MCMF solver and extract allocation (task -> node).
-        /// Returns (maxFlow, minCost, allocation-list).
+        /// We reset flows before solving so Solve() is safe to call multiple times.
         /// </summary>
         public (int maxFlow, int minCost, List<(DataModel.Task, Node)> allocation) Solve()
         {
+            // NEW: ensure we start from zero flows (idempotent)
+            graph.ResetFlows();
+
             var mcmf = new MinCostMaxFlow.MinCostMaxFlow(graph, source, sink);
             var (flow, cost) = mcmf.GetMinCostMaxFlow();
 
@@ -86,7 +116,7 @@ namespace Allocation
 
                 foreach (var e in graph.Adj[taskVertex])
                 {
-                    if (e.To != source && e.Flow > 0) // assigned edge
+                    if (e.To != source && e.Flow > 0)
                     {
                         int nodeIndex = e.To - (1 + tasks.Count);
                         if (nodeIndex >= 0 && nodeIndex < nodes.Count)
@@ -100,9 +130,6 @@ namespace Allocation
             return (flow, cost, allocation);
         }
 
-        /// <summary>
-        /// Produce Phase-1 style JSON output:
-        /// </summary>
         public string GetPhase1OutputJson()
         {
             var (flow, cost, allocation) = Solve();
@@ -113,7 +140,12 @@ namespace Allocation
                 assignments[t.Id] = n.Id;
             }
 
-            var outputObj = new { assignments = assignments, total_cost = cost };
+            var outputObj = new
+            {
+                assignments = assignments,
+                total_cost = cost,
+                assigned_count = assignments.Count,
+            };
 
             return JsonSerializer.Serialize(
                 outputObj,

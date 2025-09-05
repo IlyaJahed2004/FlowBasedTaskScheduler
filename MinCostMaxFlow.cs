@@ -1,85 +1,79 @@
 using DataModel;
 
-namespace MinCostMaxFlow;
-
-public class MinCostMaxFlow
+namespace MinCostMaxFlow
 {
-    private readonly Graph graph;
-    private readonly int source,
-        sink;
-
-    public MinCostMaxFlow(Graph g, int s, int t)
+    public class MinCostMaxFlow
     {
-        graph = g;
-        source = s;
-        sink = t;
-    }
+        private readonly Graph graph;
+        private readonly int source,
+            sink;
 
-    public (int maxFlow, int minCost) GetMinCostMaxFlow()
-    {
-        int flow = 0,
-            cost = 0;
-        int n = graph.VertexCount;
-
-        while (true)
+        public MinCostMaxFlow(Graph g, int s, int t)
         {
-            // 1) init distances/parents
-            int[] dist = new int[n];
-            Edge[] parent = new Edge[n];
-            for (int i = 0; i < n; i++)
-                dist[i] = int.MaxValue;
-            dist[source] = 0;
+            graph = g;
+            source = s;
+            sink = t;
+        }
 
-            // 2) Bellman–Ford: do V-1 full relaxations over ALL edges
-            for (int it = 0; it < n - 1; it++)
+        // Basic successive-shortest-path (Bellman-Ford to handle negative costs)
+        public (int maxFlow, int minCost) GetMinCostMaxFlow()
+        {
+            int flow = 0,
+                cost = 0;
+            int n = graph.VertexCount;
+
+            while (true)
             {
-                bool improved = false;
+                int[] dist = new int[n];
+                Edge[] parent = new Edge[n];
+                for (int i = 0; i < n; i++)
+                    dist[i] = int.MaxValue;
+                dist[source] = 0;
 
-                for (int u = 0; u < n; u++)
+                // Bellman-Ford: V-1 relaxations
+                for (int it = 0; it < n - 1; it++)
                 {
-                    if (dist[u] == int.MaxValue)
-                        continue;
-
-                    foreach (var e in graph.Adj[u])
+                    bool improved = false;
+                    for (int u = 0; u < n; u++)
                     {
-                        if (e.RemainingCapacity <= 0)
+                        if (dist[u] == int.MaxValue)
                             continue;
-
-                        int aimedvertex = e.To;
-                        int regularcost = dist[u] + e.Cost;
-                        if (regularcost < dist[aimedvertex])
+                        foreach (var e in graph.Adj[u])
                         {
-                            dist[aimedvertex] = regularcost;
-                            parent[aimedvertex] = e;
-                            improved = true;
+                            if (e.RemainingCapacity <= 0)
+                                continue;
+                            int v = e.To;
+                            long nd = (long)dist[u] + e.Cost;
+                            if (nd < dist[v])
+                            {
+                                dist[v] = (int)nd;
+                                parent[v] = e;
+                                improved = true;
+                            }
                         }
                     }
+                    if (!improved)
+                        break;
                 }
 
-                if (!improved)
-                    break;
+                if (dist[sink] == int.MaxValue || parent[sink] == null)
+                    break; // no augmenting path
+
+                int aug = int.MaxValue;
+                for (int v = sink; v != source; v = parent[v].From)
+                    aug = Math.Min(aug, parent[v].RemainingCapacity);
+
+                for (int v = sink; v != source; v = parent[v].From)
+                {
+                    var e = parent[v];
+                    e.AddFlow(aug);
+                    cost += aug * e.Cost;
+                }
+
+                flow += aug;
             }
 
-            // 3) if sink is unreachable, no more augmenting paths → stop
-            if (dist[sink] == int.MaxValue || parent[sink] == null)
-                break;
-
-            // 4) find bottleneck capacity (minimum remaining capacity along the path)
-            int augFlow = int.MaxValue;
-            for (int v = sink; v != source; v = parent[v].From)
-                augFlow = Math.Min(augFlow, parent[v].RemainingCapacity);
-
-            // 5) update flows along the path and accumulate total cost
-            for (int v = sink; v != source; v = parent[v].From)
-            {
-                var e = parent[v];
-                e.AddFlow(augFlow);
-                cost += augFlow * e.Cost; // add path cost per unit * flow units
-            }
-
-            // increase total flow
-            flow += augFlow;
+            return (flow, cost);
         }
-        return (flow, cost);
     }
 }

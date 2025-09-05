@@ -23,6 +23,7 @@ namespace Scheduling
         private readonly List<Node> nodes;
         private readonly Dictionary<string, string> assignment; // TaskId -> NodeId
         private readonly List<int> timeSlots;
+        private readonly HashSet<int> timeSlotSet;
         private readonly Dictionary<string, Dictionary<int, int>> cpuPerTime; // nodeId -> (t -> CPU)
         private readonly Dictionary<string, Dictionary<int, int>>? ramPerTime;
         private readonly Dictionary<string, int> duration; // TaskId -> duration
@@ -41,96 +42,263 @@ namespace Scheduling
             int totalCostPhase1
         )
         {
-            this.tasks = tasks;
-            this.nodes = nodes;
-            this.assignment = assignment;
-            this.timeSlots = timeSlots.OrderBy(t => t).ToList();
-            this.cpuPerTime = DeepCopy(cpuPerTime);
+            this.tasks = tasks ?? throw new ArgumentNullException(nameof(tasks));
+            this.nodes = nodes ?? throw new ArgumentNullException(nameof(nodes));
+            this.assignment = assignment ?? throw new ArgumentNullException(nameof(assignment));
+            this.timeSlots = (timeSlots ?? throw new ArgumentNullException(nameof(timeSlots)))
+                .OrderBy(t => t)
+                .ToList();
+            this.timeSlotSet = new HashSet<int>(this.timeSlots);
+            this.cpuPerTime = DeepCopy(
+                cpuPerTime ?? throw new ArgumentNullException(nameof(cpuPerTime))
+            );
             this.ramPerTime = ramPerTime is null ? null : DeepCopy(ramPerTime);
-            this.duration = duration;
-            this.dependencies = dependencies;
+            this.duration = duration ?? new Dictionary<string, int>();
+            this.dependencies = dependencies ?? new List<Dependency>();
             this.totalCostPhase1 = totalCostPhase1;
         }
 
+        /// <summary>
+        /// Main solver: dynamic list-scheduling using ready-set.
+        /// Tries to place tasks as early as possible while respecting dependencies, deadlines and per-slot resources.
+        /// </summary>
         public Phase2Result Solve()
         {
-            // 1) Map برای lookup سریع
+            // quick lookups
             var taskById = tasks.ToDictionary(t => t.Id, t => t);
             var nodeById = nodes.ToDictionary(n => n.Id, n => n);
 
-            // 2) Topological sort
-            var topo = TopologicalOrder(taskById.Keys.ToList(), dependencies, out string? cycleErr);
-            if (topo is null)
+            // validate assignments and basic inputs
+            foreach (var kv in assignment)
             {
-                return new Phase2Result
-                {
-                    Valid = false,
-                    TotalCost = totalCostPhase1,
-                    Reason = cycleErr,
-                };
-            }
-
-            var finishTime = new Dictionary<string, int>();
-            var schedule = new Dictionary<string, (string node, int start_time)>();
-
-            // 3) Greedy scheduling
-            foreach (var taskId in topo)
-            {
-                if (!assignment.TryGetValue(taskId, out var nodeId))
-                {
+                if (!taskById.ContainsKey(kv.Key))
                     return new Phase2Result
                     {
                         Valid = false,
                         TotalCost = totalCostPhase1,
-                        Reason = $"Task {taskId} has no assigned node from Phase 1.",
+                        Reason = $"Assignment refers to unknown task {kv.Key}",
+                    };
+                if (!nodeById.ContainsKey(kv.Value))
+                    return new Phase2Result
+                    {
+                        Valid = false,
+                        TotalCost = totalCostPhase1,
+                        Reason = $"Assignment refers to unknown node {kv.Value} for task {kv.Key}",
+                    };
+            }
+
+            // Build predecessor and successor sets + indegree
+            var preds = tasks.ToDictionary(t => t.Id, t => new HashSet<string>());
+            var succs = tasks.ToDictionary(t => t.Id, t => new HashSet<string>());
+            var indeg = tasks.ToDictionary(t => t.Id, t => 0);
+
+            foreach (var d in dependencies)
+            {
+                if (!preds.ContainsKey(d.Before) || !preds.ContainsKey(d.After))
+                    return new Phase2Result
+                    {
+                        Valid = false,
+                        TotalCost = totalCostPhase1,
+                        Reason = $"Dependency refers to unknown task: {d.Before} -> {d.After}",
+                    };
+
+                if (!succs[d.Before].Contains(d.After))
+                {
+                    succs[d.Before].Add(d.After);
+                    preds[d.After].Add(d.Before);
+                    indeg[d.After] = preds[d.After].Count;
+                }
+            }
+
+            // ready set: tasks with indeg = 0
+            var ready = new SortedSet<string>(
+                indeg.Where(kv => kv.Value == 0).Select(kv => kv.Key)
+            );
+
+            // state
+            var finishTime = new Dictionary<string, int>(); // taskId -> finish time
+            var schedule = new Dictionary<string, (string node, int start_time)>();
+
+            // Helper local funcs for resource checks (work on copies already)
+            bool CanFit(string nodeId, int start, int dur, int cpuReq, int ramReq)
+            {
+                if (!cpuPerTime.ContainsKey(nodeId))
+                    return false;
+                for (int k = 0; k < dur; k++)
+                {
+                    int t = start + k;
+                    if (!timeSlotSet.Contains(t))
+                        return false;
+                    if (!cpuPerTime[nodeId].TryGetValue(t, out var cpuAvail))
+                        return false;
+                    if (cpuAvail < cpuReq)
+                        return false;
+                    if (ramPerTime != null)
+                    {
+                        if (!ramPerTime.TryGetValue(nodeId, out var ramMap))
+                            return false;
+                        if (!ramMap.TryGetValue(t, out var ramAvail))
+                            return false;
+                        if (ramAvail < ramReq)
+                            return false;
+                    }
+                }
+                return true;
+            }
+
+            void Reserve(string nodeId, int start, int dur, int cpuReq, int ramReq)
+            {
+                for (int k = 0; k < dur; k++)
+                {
+                    int t = start + k;
+                    cpuPerTime[nodeId][t] -= cpuReq;
+                    if (ramPerTime != null)
+                        ramPerTime[nodeId][t] -= ramReq;
+                }
+            }
+
+            // main loop: dynamic ready-set scheduling
+            // We'll pick among ready tasks the one with the smallest earliest feasible start,
+            // tie-break by earliest deadline then larger cpu requirement (put heavy tasks earlier).
+            var remaining = new HashSet<string>(taskById.Keys);
+
+            while (remaining.Count > 0)
+            {
+                // populate ready if empty (shouldn't by construction, but safety)
+                if (ready.Count == 0)
+                {
+                    // cycle or unsatisfiable dependency (shouldn't happen because we validated DAG earlier)
+                    return new Phase2Result
+                    {
+                        Valid = false,
+                        TotalCost = totalCostPhase1,
+                        Reason =
+                            "No ready tasks available — possible cycle or missing predecessors.",
                     };
                 }
 
-                var task = taskById[taskId];
-                var d = duration.TryGetValue(taskId, out var dd) ? dd : 1;
-
-                // earliest start = max(predecessors’ finish)
-                int est = 0;
-                foreach (var dep in dependencies.Where(dep => dep.After == taskId))
+                // For each ready task compute est (max of preds finish), latestStart and earliest feasible start (or INF)
+                var candidateInfos =
+                    new List<(string taskId, int est, int latestStart, int earliestFit)>();
+                foreach (var tid in ready)
                 {
-                    if (!finishTime.TryGetValue(dep.Before, out var f))
-                        return new Phase2Result
-                        {
-                            Valid = false,
-                            TotalCost = totalCostPhase1,
-                            Reason = $"Predecessor {dep.Before} of {taskId} is unscheduled.",
-                        };
-                    est = Math.Max(est, f);
-                }
-
-                // search start time در بازه [est .. deadline-d]
-                int latestStart = task.deadline - d;
-                bool placed = false;
-
-                for (int t = est; t <= latestStart; t++)
-                {
-                    if (CanFit(nodeId, t, d, task.CpuRequired, task.RamRequired))
+                    var tsk = taskById[tid];
+                    int d = duration.TryGetValue(tid, out var dd) ? dd : 1;
+                    int est = 0;
+                    foreach (var p in preds[tid])
                     {
-                        Reserve(nodeId, t, d, task.CpuRequired, task.RamRequired);
-                        schedule[taskId] = (nodeId, t);
-                        finishTime[taskId] = t + d;
-                        placed = true;
-                        break;
+                        if (!finishTime.TryGetValue(p, out var pf))
+                        {
+                            // predecessor not scheduled yet (should not happen for ready tasks)
+                            est = int.MaxValue / 4;
+                            break;
+                        }
+                        est = Math.Max(est, pf);
                     }
+
+                    int latestStart = tsk.deadline - d;
+                    if (latestStart < est)
+                    {
+                        // impossible for this task in any schedule (deadline too tight)
+                        candidateInfos.Add((tid, est, latestStart, int.MaxValue / 4));
+                        continue;
+                    }
+
+                    // find earliest start >= est s.t. CanFit
+                    int earliestFit = int.MaxValue / 4;
+                    for (int s = est; s <= latestStart; s++)
+                    {
+                        if (CanFit(assignment[tid], s, d, tsk.CpuRequired, tsk.RamRequired))
+                        {
+                            earliestFit = s;
+                            break;
+                        }
+                    }
+
+                    candidateInfos.Add((tid, est, latestStart, earliestFit));
                 }
 
-                if (!placed)
+                // choose best candidate: first, any with finite earliestFit; pick smallest earliestFit;
+                // tie-break by deadline, then by cpu requirement desc
+                var feasible = candidateInfos
+                    .Where(ci => ci.earliestFit < int.MaxValue / 4)
+                    .ToList();
+                (string taskId, int est, int latestStart, int earliestFit) chosenInfo;
+                if (feasible.Count > 0)
+                {
+                    chosenInfo = feasible
+                        .OrderBy(ci => ci.earliestFit)
+                        .ThenBy(ci => taskById[ci.taskId].deadline)
+                        .ThenByDescending(ci => taskById[ci.taskId].CpuRequired)
+                        .First();
+                }
+                else
+                {
+                    // No ready task can fit now. Perhaps some ready tasks are blocked until other ready tasks are scheduled.
+                    // Try a heuristic: pick ready task with largest slack (latestStart - est) negative means impossible
+                    var impossible = candidateInfos
+                        .Where(ci => ci.earliestFit >= int.MaxValue / 4)
+                        .ToList();
+                    // if every ready task impossible -> infeasible schedule
+                    return new Phase2Result
+                    {
+                        Valid = false,
+                        TotalCost = totalCostPhase1,
+                        Reason =
+                            $"No ready task can be placed in any allowed time window. Check capacities/deadlines. Details: {string.Join(", ", impossible.Select(ii => $"{ii.taskId}(est={ii.est},latest={ii.latestStart})"))}",
+                    };
+                }
+
+                // schedule chosen
+                var chosenTaskId = chosenInfo.taskId;
+                var chosenStart = chosenInfo.earliestFit;
+                var chosenDur = duration.TryGetValue(chosenTaskId, out var dd2) ? dd2 : 1;
+                var chosenNode = assignment[chosenTaskId];
+                // final sanity checks
+                if (
+                    !CanFit(
+                        chosenNode,
+                        chosenStart,
+                        chosenDur,
+                        taskById[chosenTaskId].CpuRequired,
+                        taskById[chosenTaskId].RamRequired
+                    )
+                )
                 {
                     return new Phase2Result
                     {
                         Valid = false,
                         TotalCost = totalCostPhase1,
                         Reason =
-                            $"Cannot schedule {taskId} on {nodeId} before deadline {task.deadline}.",
+                            $"Internal error: candidate chosen but cannot actually fit: {chosenTaskId} on {chosenNode} at {chosenStart}",
                     };
+                }
+
+                Reserve(
+                    chosenNode,
+                    chosenStart,
+                    chosenDur,
+                    taskById[chosenTaskId].CpuRequired,
+                    taskById[chosenTaskId].RamRequired
+                );
+                schedule[chosenTaskId] = (chosenNode, chosenStart);
+                finishTime[chosenTaskId] = chosenStart + chosenDur;
+
+                // update sets
+                remaining.Remove(chosenTaskId);
+                ready.Remove(chosenTaskId);
+
+                // decrease indeg for successors (i.e., remove edge chosenTask -> succ)
+                foreach (var succ in succs[chosenTaskId])
+                {
+                    preds[succ].Remove(chosenTaskId);
+                    indeg[succ] = preds[succ].Count;
+                    if (indeg[succ] == 0)
+                        ready.Add(succ);
                 }
             }
 
+            // all scheduled
             return new Phase2Result
             {
                 Valid = true,
@@ -139,100 +307,15 @@ namespace Scheduling
             };
         }
 
-        private bool CanFit(string nodeId, int start, int dur, int cpuReq, int ramReq)
-        {
-            if (!cpuPerTime.ContainsKey(nodeId))
-                return false;
-            for (int k = 0; k < dur; k++)
-            {
-                int t = start + k;
-                if (!timeSlots.Contains(t))
-                    return false;
-
-                if (!cpuPerTime[nodeId].TryGetValue(t, out var cpuAvail))
-                    return false;
-                if (cpuAvail < cpuReq)
-                    return false;
-
-                if (ramPerTime != null)
-                {
-                    if (!ramPerTime.TryGetValue(nodeId, out var ramMap))
-                        return false;
-                    if (!ramMap.TryGetValue(t, out var ramAvail))
-                        return false;
-                    if (ramAvail < ramReq)
-                        return false;
-                }
-            }
-            return true;
-        }
-
-        private void Reserve(string nodeId, int start, int dur, int cpuReq, int ramReq)
-        {
-            for (int k = 0; k < dur; k++)
-            {
-                int t = start + k;
-                cpuPerTime[nodeId][t] -= cpuReq;
-                if (ramPerTime != null)
-                {
-                    ramPerTime[nodeId][t] -= ramReq;
-                }
-            }
-        }
-
-        private static List<string>? TopologicalOrder(
-            List<string> taskIds,
-            List<Dependency> deps,
-            out string? error
-        )
-        {
-            error = null;
-
-            var adj = taskIds.ToDictionary(id => id, _ => new List<string>());
-            var indeg = taskIds.ToDictionary(id => id, _ => 0);
-
-            foreach (var d in deps)
-            {
-                if (!adj.ContainsKey(d.Before) || !adj.ContainsKey(d.After))
-                {
-                    error = $"Dependency refers to unknown task: {d.Before} -> {d.After}";
-                    return null;
-                }
-                adj[d.Before].Add(d.After);
-                indeg[d.After]++;
-            }
-
-            var q = new Queue<string>(indeg.Where(kv => kv.Value == 0).Select(kv => kv.Key));
-            var order = new List<string>();
-
-            while (q.Count > 0)
-            {
-                var u = q.Dequeue();
-                order.Add(u);
-                foreach (var v in adj[u])
-                {
-                    indeg[v]--;
-                    if (indeg[v] == 0)
-                        q.Enqueue(v);
-                }
-            }
-
-            if (order.Count != taskIds.Count)
-            {
-                error = "Cycle detected in dependencies (not a DAG).";
-                return null;
-            }
-
-            return order;
-        }
-
         private static Dictionary<string, Dictionary<int, int>> DeepCopy(
             Dictionary<string, Dictionary<int, int>> src
         )
         {
             var dst = new Dictionary<string, Dictionary<int, int>>();
-            foreach (var (k, v) in src)
-                dst[k] = v.ToDictionary(x => x.Key, x => x.Value);
+            foreach (var kv in src)
+            {
+                dst[kv.Key] = kv.Value.ToDictionary(x => x.Key, x => x.Value);
+            }
             return dst;
         }
     }

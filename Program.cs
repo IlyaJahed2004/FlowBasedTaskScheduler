@@ -1,10 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using Allocation;
 using DataModel;
-using DynamicReallocation;
-using LocalNodeScheduling;
 using Scheduling;
 
 namespace FlowBasedTaskScheduler
@@ -13,216 +12,163 @@ namespace FlowBasedTaskScheduler
     {
         static void Main()
         {
-            // --- Phase 0: Define Tasks & Nodes ---
+            // --- Phase 0: Define Tasks & Nodes (نمونه مطابق داک) ---
             var tasks = new List<DataModel.Task>
             {
-                new DataModel.Task("T1", 2, 2, 2),
-                new DataModel.Task("T2", 1, 2, 3),
-                new DataModel.Task("T3", 2, 1, 4),
+                // Id, CpuRequired, RamRequired, deadline
+                // توجه: deadline ها طوری انتخاب شدند که schedule نمونه امکان‌پذیر باشد
+                new DataModel.Task("T1", 2, 4, 1), // duration=1 -> latestStart = 0
+                new DataModel.Task("T2", 1, 2, 2), // duration=1 -> latestStart = 1
+                new DataModel.Task("T3", 3, 3, 4), // duration=2 -> latestStart = 2
             };
 
             var nodes = new List<Node>
             {
-                new Node("N1", 2, 2, 2),
-                new Node("N2", 3, 2, 2),
-                new Node("N3", 2, 2, 2),
+                // Id, CpuCapacity, RamCapacity, Slots
+                new Node("N1", 5, 6, 2), // می‌خواهیم T1 و T3 هر دو روی N1 بیایند -> Slots >= 2
+                new Node("N2", 3, 3, 2),
             };
 
-            // --- Phase 1: Allocation ---
+            // Phase1 cost matrix: tasks x nodes
+            // تنظیم شده تا تخصیص مورد انتظار حاصل شود: T1->N1 (4), T2->N2 (2), T3->N1 (3)
             int[,] costMatrix =
             {
-                { 3, 5, 4 },
-                { 2, 3, 3 },
-                { 4, 2, 3 },
+                { 4, 6 }, // T1 cost on N1,N2
+                { 3, 2 }, // T2 cost on N1,N2
+                { 3, 5 }, // T3 cost on N1,N2
             };
 
             var allocator = new TaskAllocator(tasks, nodes, costMatrix);
+
+            // RUN SOLVE ONCE (Phase 1)
             var (flow, phase1Cost, allocation) = allocator.Solve();
 
             Console.WriteLine("=== Phase 1: Assignment ===");
             foreach (var (t, n) in allocation)
                 Console.WriteLine($"  {t.Id} -> {n.Id}");
-            Console.WriteLine(allocator.GetPhase1OutputJson());
 
-            // --- Phase 2: Global Scheduling ---
+            // build assignment dictionary from allocation
+            var assignments = new Dictionary<string, string>();
+            foreach (var (t, n) in allocation)
+                assignments[t.Id] = n.Id;
+
+            // Diagnostic (optional)
+            int sumByMatrix = 0;
+            for (int i = 0; i < allocation.Count; i++)
+            {
+                var t = allocation[i].Item1;
+                var n = allocation[i].Item2;
+                int ti = tasks.FindIndex(x => x.Id == t.Id);
+                int ni = nodes.FindIndex(x => x.Id == n.Id);
+                if (ti >= 0 && ni >= 0)
+                    sumByMatrix += costMatrix[ti, ni];
+            }
+            Console.WriteLine(
+                $"Diagnostic: summed cost from costMatrix over assignments = {sumByMatrix}"
+            );
+            Console.WriteLine($"MCMF returned cost (phase1Cost) = {phase1Cost}");
+            Console.WriteLine();
+
+            // -------------------------
+            // Phase 2: Time-aware scheduling (مطابق ورودی-خروجی داک)
+            // -------------------------
+
+            // time slots available (0..3) — T3 duration=2 will occupy slots 2 and 3 if start=2
             var timeSlots = new List<int> { 0, 1, 2, 3 };
 
-            var cpuPerTime = new Dictionary<string, Dictionary<int, int>>
+            // Build per-node per-time CPU and RAM availability maps.
+            // اینجا هر تایم‌اسلات ظرفیت کامل نود را دارد — مطابق سناریوی نمونه
+            var cpuPerTime = new Dictionary<string, Dictionary<int, int>>();
+            var ramPerTime = new Dictionary<string, Dictionary<int, int>>();
+            foreach (var n in nodes)
             {
-                ["N1"] = new Dictionary<int, int>
+                var cpuMap = new Dictionary<int, int>();
+                var ramMap = new Dictionary<int, int>();
+                foreach (var t in timeSlots)
                 {
-                    { 0, 2 },
-                    { 1, 2 },
-                    { 2, 2 },
-                    { 3, 2 },
-                },
-                ["N2"] = new Dictionary<int, int>
-                {
-                    { 0, 3 },
-                    { 1, 3 },
-                    { 2, 3 },
-                    { 3, 3 },
-                },
-                ["N3"] = new Dictionary<int, int>
-                {
-                    { 0, 2 },
-                    { 1, 2 },
-                    { 2, 2 },
-                    { 3, 2 },
-                },
+                    cpuMap[t] = n.CpuCapacity;
+                    ramMap[t] = n.RamCapacity;
+                }
+                cpuPerTime[n.Id] = cpuMap;
+                ramPerTime[n.Id] = ramMap;
+            }
+
+            // Duration per task (time units) مطابق مثال داک
+            var duration = new Dictionary<string, int>
+            {
+                ["T1"] = 1,
+                ["T2"] = 1,
+                ["T3"] = 2,
             };
 
-            var ramPerTime = new Dictionary<string, Dictionary<int, int>>
-            {
-                ["N1"] = new Dictionary<int, int>
-                {
-                    { 0, 2 },
-                    { 1, 2 },
-                    { 2, 2 },
-                    { 3, 2 },
-                },
-                ["N2"] = new Dictionary<int, int>
-                {
-                    { 0, 2 },
-                    { 1, 2 },
-                    { 2, 2 },
-                    { 3, 2 },
-                },
-                ["N3"] = new Dictionary<int, int>
-                {
-                    { 0, 2 },
-                    { 1, 2 },
-                    { 2, 2 },
-                    { 3, 2 },
-                },
-            };
-
-            var durations = new Dictionary<string, int>
-            {
-                { "T1", 1 },
-                { "T2", 1 },
-                { "T3", 2 },
-            };
-
-            var deps = new List<Dependency>
+            // Dependencies مطابق مثال داک: T1 & T2 باید قبل از T3 تموم بشن
+            var dependencies = new List<Dependency>
             {
                 new Dependency("T1", "T3"),
                 new Dependency("T2", "T3"),
             };
 
-            var assignment = allocation.ToDictionary(p => p.Item1.Id, p => p.Item2.Id);
-
+            // Create scheduler and solve Phase 2
             var scheduler = new TimeAwareScheduler(
                 tasks,
                 nodes,
-                assignment,
+                assignments,
                 timeSlots,
                 cpuPerTime,
                 ramPerTime,
-                durations,
-                deps,
+                duration,
+                dependencies,
                 phase1Cost
             );
 
-            var phase2Result = scheduler.Solve();
+            var phase2 = scheduler.Solve();
 
-            Console.WriteLine("\n=== Phase 2: Global Scheduling ===");
-            if (phase2Result.Valid)
+            // Build output exactly in the requested JSON shape:
+            // { "schedule": { "T1": {"node":"N1","start_time":0}, ... }, "valid": true, "total_cost": 9 }
+            var scheduleOut = new Dictionary<string, object?>();
+            if (phase2.Valid && phase2.Schedule != null)
             {
-                foreach (var kv in phase2Result.Schedule.OrderBy(k => k.Key))
-                    Console.WriteLine(
-                        $"  {kv.Key} -> node={kv.Value.node}, start={kv.Value.start_time}"
-                    );
+                foreach (var kv in phase2.Schedule)
+                {
+                    // kv.Value is (string node, int start_time)
+                    scheduleOut[kv.Key] = new
+                    {
+                        node = kv.Value.node,
+                        start_time = kv.Value.start_time,
+                    };
+                }
+            }
+
+            var finalOut = new
+            {
+                schedule = scheduleOut,
+                valid = phase2.Valid,
+                total_cost = phase1Cost,
+                reason = phase2.Valid ? null : phase2.Reason,
+            };
+
+            Console.WriteLine("=== Phase 2: Result (requested format) ===");
+            Console.WriteLine(
+                JsonSerializer.Serialize(
+                    finalOut,
+                    new JsonSerializerOptions { WriteIndented = true }
+                )
+            );
+
+            // Also print a friendly human-readable schedule
+            Console.WriteLine();
+            Console.WriteLine("Human-readable schedule (if valid):");
+            if (!phase2.Valid)
+            {
+                Console.WriteLine($"Invalid schedule: {phase2.Reason}");
             }
             else
             {
-                Console.WriteLine($"Scheduling failed: {phase2Result.Reason}");
-            }
-
-            // --- Phase 3: Dynamic Reallocation ---
-            var phase3Events = new List<DynamicEvent>
-            {
-                new DynamicEvent("node_failure", Node: "N2"),
-                new DynamicEvent("new_task", Task: new DataModel.Task("T4", 2, 2, 4)),
-            };
-
-            var reallocator = new DynamicReallocator(
-                tasks,
-                nodes,
-                durations,
-                cpuPerTime,
-                ramPerTime,
-                phase1Cost,
-                phase2Result.Schedule
-            );
-
-            var phase3Output = reallocator.ProcessEvents(phase3Events);
-
-            Console.WriteLine("\n=== Phase 3: Dynamic Reallocation ===");
-            Console.WriteLine(reallocator.ToJson(phase3Output));
-
-            // --- Phase 4: Local Node Scheduling using DP ---
-            Console.WriteLine("\n=== Phase 4: Local Node Scheduling ===");
-            var nodesAfterPhase3 = new Dictionary<string, List<LocalTask>>();
-
-            foreach (var kv in phase3Output.UpdatedSchedule)
-            {
-                var nodeId = kv.Value.node;
-                if (!nodesAfterPhase3.ContainsKey(nodeId))
-                    nodesAfterPhase3[nodeId] = new List<LocalTask>();
-
-                var taskObj = tasks.FirstOrDefault(tt => tt.Id == kv.Key);
-                if (taskObj == null)
-                {
-                    taskObj = new DataModel.Task(kv.Key, 2, 2, 4);
-                    tasks.Add(taskObj);
-                }
-
-                int dur = durations.ContainsKey(kv.Key) ? durations[kv.Key] : 1;
-
-                nodesAfterPhase3[nodeId]
-                    .Add(
-                        new LocalTask(
-                            taskObj.Id,
-                            taskObj.CpuRequired,
-                            taskObj.RamRequired,
-                            dur,
-                            taskObj.deadline
-                        )
+                foreach (var kv in phase2.Schedule.OrderBy(k => k.Value.start_time))
+                    Console.WriteLine(
+                        $"  {kv.Key}: node={kv.Value.node}, start_time={kv.Value.start_time}"
                     );
             }
-
-            foreach (var nodeTasks in nodesAfterPhase3)
-            {
-                var nodeId = nodeTasks.Key;
-
-                Dictionary<int, Dictionary<string, int>> resourceForNode;
-
-                if (cpuPerTime.TryGetValue(nodeId, out var cpuMapForNode))
-                {
-                    resourceForNode = cpuMapForNode.ToDictionary(
-                        kv => kv.Key,
-                        kv => new Dictionary<string, int> { { "cpu", kv.Value } }
-                    );
-                }
-                else
-                {
-                    resourceForNode = timeSlots.ToDictionary(
-                        t => t,
-                        t => new Dictionary<string, int> { { "cpu", 0 } }
-                    );
-                }
-
-                var input = new Phase4Input(nodeId, nodeTasks.Value, resourceForNode, timeSlots);
-
-                var localScheduler = new LocalSchedulerDP(input);
-                var phase4Result = localScheduler.Schedule();
-
-                Console.WriteLine($"\nNode {nodeId} Schedule:");
-                Console.WriteLine(localScheduler.ToJson(phase4Result));
-            }
-
-            Console.WriteLine("\n(End of demo)");
         }
     }
 }

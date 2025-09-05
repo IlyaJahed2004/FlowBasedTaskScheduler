@@ -1,59 +1,78 @@
-namespace DataModel;
-
-public record Task(string Id, int CpuRequired, int RamRequired, int deadline);
-
-public record Node(string Id, int CpuCapacity, int RamCapacity, int Slots);
-
-public class Edge
+namespace DataModel
 {
-    public int From { get; init; }
-    public int To { get; init; }
-    public int Capacity { get; init; }
-    public int Cost { get; init; } //in taskallocation it means that based on which node the task wanna be executed ,the cost is different.
-    public int Flow { get; private set; }
-    public Edge Reverse { get; set; } = null!;
+    public record Task(string Id, int CpuRequired, int RamRequired, int deadline);
 
-    public int RemainingCapacity => Capacity - Flow;
+    public record Node(string Id, int CpuCapacity, int RamCapacity, int Slots);
 
-    public void AddFlow(int f)
+    public class Edge
     {
-        Flow += f;
-        Reverse.Flow -= f;
-    }
-}
+        public int From { get; init; }
+        public int To { get; init; }
+        public int Capacity { get; init; }
+        public int Cost { get; init; } // cost per unit flow
+        public int Flow { get; private set; }
+        public Edge Reverse { get; set; } = null!;
 
-public class Graph
-{
-    public int VertexCount { get; }
-    public List<Edge>[] Adj { get; }
+        public int RemainingCapacity => Capacity - Flow;
 
-    public Graph(int vertexCount)
-    {
-        VertexCount = vertexCount;
-        Adj = new List<Edge>[vertexCount];
-        for (int i = 0; i < vertexCount; i++)
-            Adj[i] = new List<Edge>();
+        public void AddFlow(int f)
+        {
+            Flow += f;
+            Reverse.Flow -= f;
+        }
+
+        // Utility to reset flow (used by Graph.ResetFlows)
+        public void ResetFlow()
+        {
+            Flow = 0;
+        }
     }
 
-    public void AddEdge(int from, int to, int capacity, int cost)
+    public class Graph
     {
-        var e1 = new Edge
+        public int VertexCount { get; }
+        public List<Edge>[] Adj { get; }
+
+        public Graph(int vertexCount)
         {
-            From = from,
-            To = to,
-            Capacity = capacity,
-            Cost = cost,
-        };
-        var e2 = new Edge
+            VertexCount = vertexCount;
+            Adj = new List<Edge>[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+                Adj[i] = new List<Edge>();
+        }
+
+        public void AddEdge(int from, int to, int capacity, int cost)
         {
-            From = to,
-            To = from,
-            Capacity = 0,
-            Cost = -cost,
-        };
-        e1.Reverse = e2;
-        e2.Reverse = e1;
-        Adj[from].Add(e1);
-        Adj[to].Add(e2);
+            var e1 = new Edge
+            {
+                From = from,
+                To = to,
+                Capacity = capacity,
+                Cost = cost,
+            };
+            var e2 = new Edge
+            {
+                From = to,
+                To = from,
+                Capacity = 0,
+                Cost = -cost,
+            };
+            e1.Reverse = e2;
+            e2.Reverse = e1;
+            Adj[from].Add(e1);
+            Adj[to].Add(e2);
+        }
+
+        // NEW: reset flows on all edges to allow re-running MCMF safely
+        public void ResetFlows()
+        {
+            for (int u = 0; u < VertexCount; u++)
+            {
+                foreach (var e in Adj[u])
+                {
+                    e.ResetFlow();
+                }
+            }
+        }
     }
 }
